@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Скрининг туберкулёза · учебное демо</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: #edf2f2; color: #172d35; font: 16px/1.55 system-ui, sans-serif; }
+main { width: min(960px, 100%); margin: auto; padding: 32px 20px; }
+h1 { font-size: clamp(1.8rem, 4vw, 3rem); line-height: 1.12; margin: 0; }
+h2 { font-size: 1.2rem; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+section { background: white; padding: 20px; border: 1px solid #cfdbdb; border-radius: 16px; }
+label { font-weight: 650; display: block; }
+select { width: 100%; font: inherit; padding: 8px; margin: 6px 0 14px; border-radius: 6px; }
+img { display: block; width: 100%; height: clamp(230px, 40vw, 390px); object-fit: contain; background: #182226; border-radius: 8px; }
+[hidden] { display: none !important; }
+dl { margin: 0; }
+dt { color: #465b61; font-size: .9rem; }
+dd { margin: 0 0 12px; font-weight: 650; }
+a { color: #13666e; }
+.note { border-left: 4px solid #bc7640; padding-left: 12px; }
+@media (max-width: 650px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Скрининг туберкулёза по рентгенограммам</h1>
+  <p>Учебное демо проекта для Астаны. Выбери открытый снимок Montgomery и сравни сохранённый результат модели с меткой датасета.</p>
+  <p id="status" role="status">Загружаем результаты пилота…</p>
+  <div class="grid" id="demo" hidden>
+    <section aria-label="Выбор снимка">
+      <label for="sample">Рентгенограмма из датасета</label>
+      <select id="sample"></select>
+      <img id="image" alt="Рентгенограмма грудной клетки из открытого набора Montgomery" hidden>
+      <p id="image-error" hidden>Изображение недоступно. Сохранённая оценка показана справа или ниже.</p>
+      <p><a id="original" target="_blank" rel="noopener noreferrer">Открыть снимок в каталоге NLM</a></p>
+    </section>
+    <section aria-live="polite">
+      <h2>Результат для выбранного снимка</h2>
+      <dl>
+        <dt>Оценка модели от 0 до 1</dt><dd id="score"></dd>
+        <dt>Порог отметки</dt><dd id="threshold"></dd>
+        <dt>Отметка модели</dt><dd id="flag"></dd>
+        <dt>Метка датасета</dt><dd id="label"></dd>
+        <dt>Сравнение с меткой</dt><dd id="outcome"></dd>
+      </dl>
+      <p class="note" id="summary"></p>
+      <p>Оценка берётся из сохранённого эксперимента. Она не показывает вероятность заболевания у конкретного человека. Демо предназначено для открытых примеров.</p>
+    </section>
+  </div>
+</main>
+<script type="module">
+const field = (id) => document.getElementById(id);
+const image = field("image");
+const base = "https://data.lhncbc.nlm.nih.gov/public/Tuberculosis-Chest-X-ray-Datasets/Montgomery-County-CXR-Set/MontgomerySet/CXR_png/";
+const format = new Intl.NumberFormat("ru", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+
+async function load(name) {
+  const response = await fetch(`../results/public_pilot/${name}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response;
+}
+
+try {
+  const [csv, metrics] = await Promise.all([
+    load("predictions.csv").then(response => response.text()),
+    load("metrics.json").then(response => response.json())
+  ]);
+  const rows = csv.trim().split(/\r?\n/).slice(1).map(line => line.split(","));
+  const samples = rows.map(([file, label, score, flag]) => ({ file, label: Number(label), score: Number(score), flag: Number(flag) }));
+  if (!samples.length || samples.some(sample => !/^MCUCXR_\d+_[01]\.png$/.test(sample.file) ||
+      !Number.isFinite(sample.score) || ![0, 1].includes(sample.label) || ![0, 1].includes(sample.flag))) {
+    throw new Error("Unexpected prediction data");
+  }
+
+  const select = field("sample");
+  samples.forEach((sample, index) => select.add(new Option(`Снимок ${index + 1} · ${sample.file.split("_")[1]}`, index)));
+  field("threshold").textContent = format.format(metrics.threshold_from_shenzhen_validation);
+  field("summary").textContent = `В пилоте алгоритм отметил ${metrics.tp + metrics.fp} из ${metrics.test_images} снимков. Ложных отметок — ${metrics.fp}. При таком результате отметки не помогают выбрать, какой снимок читать первым.`;
+
+  const outcomes = ["Верно без отметки", "Ложная отметка", "Пропущенная положительная метка", "Верная отметка"];
+  function showSample() {
+    const sample = samples[Number(select.value)];
+    field("score").textContent = format.format(sample.score);
+    field("flag").textContent = sample.flag ? "Предложить приоритет" : "Обычная очередь";
+    field("label").textContent = sample.label ? "Признаки, совместимые с туберкулёзом" : "Нормальный снимок";
+    field("outcome").textContent = outcomes[sample.label * 2 + sample.flag];
+    field("image-error").hidden = true;
+    image.hidden = false;
+    field("original").href = image.src = base + sample.file;
+  }
+
+  image.addEventListener("error", () => {
+    image.hidden = true;
+    field("image-error").hidden = false;
+  });
+  select.addEventListener("change", showSample);
+  showSample();
+  field("demo").hidden = false;
+  field("status").hidden = true;
+} catch {
+  field("status").textContent = "Результаты не загрузились. Запусти сервер командой из README и открой демо через localhost.";
+}
+</script>
+</body>
+</html>
